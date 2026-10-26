@@ -1,0 +1,26 @@
+
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build with Godot
+        uses: barichello/godot-ci:4.5
+        with:
+          godot_version: 4.5
+        # Следующие шаги выполняются в контейнере сборки
+
+      - name: Check project files
+        run: |
+          test -f project.godot
+          test -f export_presets.cfg
+          
