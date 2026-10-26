@@ -7,9 +7,15 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build Godot Android APK
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+
     container:
       image: barichello/godot-ci:4.5
 
@@ -18,9 +24,16 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
           apt-get update
-          apt-get install -y fontconfig openjdk-17-jdk unzip wget
+          apt-get install -y \
+            fontconfig \
+            openjdk-17-jdk \
+            unzip \
+            wget \
+            ca-certificates \
+            coreutils
 
       - name: Configure Java
         run: |
@@ -31,32 +44,76 @@ jobs:
 
       - name: Check project files
         run: |
+          set -eu
           test -f project.godot
           test -f export_presets.cfg
           echo "Project files found"
 
       - name: Install Godot export templates
+        timeout-minutes: 5
         run: |
-          mkdir -p ~/.local/share/godot/export_templates/4.5.stable
-          wget -O /tmp/templates.tpz \
-            https://github.com/godotengine/godot/releases/download/4.5-stable/Godot_v4.5-stable_export_templates.tpz
-          mkdir -p /tmp/godot-templates
-          unzip -oq /tmp/templates.tpz -d /tmp/godot-templates
-          cp -r /tmp/godot-templates/templates/* \
-            ~/.local/share/godot/export_templates/4.5.stable/
-          ls -la ~/.local/share/godot/export_templates/4.5.stable/
+          set -eu
+
+          GODOT_VERSION="4.5.stable"
+          TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/$GODOT_VERSION"
+
+          mkdir -p "$TEMPLATE_DIR"
+
+          if [ ! -f "$TEMPLATE_DIR/android_debug.apk" ] || \
+             [ ! -f "$TEMPLATE_DIR/android_release.apk" ] || \
+             [ ! -f "$TEMPLATE_DIR/android_source.zip" ]; then
+
+            wget --timeout=30 --tries=3 \
+              -O /tmp/templates.tpz \
+              "https://github.com/godotengine/godot/releases/download/4.5-stable/Godot_v4.5-stable_export_templates.tpz"
+
+            mkdir -p /tmp/godot-templates
+            unzip -oq /tmp/templates.tpz -d /tmp/godot-templates
+
+            test -f /tmp/godot-templates/templates/android_debug.apk
+            test -f /tmp/godot-templates/templates/android_release.apk
+            test -f /tmp/godot-templates/templates/android_source.zip
+
+            cp /tmp/godot-templates/templates/* "$TEMPLATE_DIR/"
+          fi
+
+          ls -lh "$TEMPLATE_DIR"
 
       - name: Import project
+        timeout-minutes: 3
         run: |
-          godot --headless --editor --path . --quit
+          timeout 150s godot \
+            --headless \
+            --editor \
+            --path . \
+            --quit
 
       - name: Install Android build template
+        timeout-minutes: 4
         run: |
-          godot --headless --path . --install-android-build-template
+          set -eu
+
+          if [ -d android/build ]; then
+            echo "Android build template already exists"
+          else
+            timeout 180s godot \
+              --headless \
+              --verbose \
+              --path . \
+              --install-android-build-template \
+              --export-debug "Android" /tmp/template-check.apk
+          fi
+
+          test -d android/build
+          echo "Android build template check completed"
 
       - name: Configure debug signing key
+        timeout-minutes: 3
         run: |
-          mkdir -p ~/.config/godot
+          set -eu
+
+          mkdir -p "$HOME/.config/godot"
+
           keytool -genkeypair \
             -keystore /tmp/debug.keystore \
             -storepass android \
@@ -66,19 +123,33 @@ jobs:
             -keysize 2048 \
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
-          touch ~/.config/godot/editor_settings-4.5.tres
-          printf '\nexport/android/java_sdk_path = "/usr/lib/jvm/java-17-openjdk-amd64"\n' >> ~/.config/godot/editor_settings-4.5.tres
-          printf 'export/android/debug_keystore = "/tmp/debug.keystore"\n' >> ~/.config/godot/editor_settings-4.5.tres
-          printf 'export/android/debug_keystore_user = "androiddebugkey"\n' >> ~/.config/godot/editor_settings-4.5.tres
-          printf 'export/android/debug_keystore_pass = "android"\n' >> ~/.config/godot/editor_settings-4.5.tres
+
+          cat >> "$HOME/.config/godot/editor_settings-4.5.tres" <<'EOF'
+
+          export/android/java_sdk_path = "/usr/lib/jvm/java-17-openjdk-amd64"
+          export/android/debug_keystore = "/tmp/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
 
       - name: Export debug APK
+        timeout-minutes: 10
         run: |
+          set -eu
+
           mkdir -p build
-          godot --headless --path . --export-debug "Android" build/CrashDrive3D.apk
-          test -f build/CrashDrive3D.apk
+
+          timeout 540s godot \
+            --headless \
+            --verbose \
+            --path . \
+            --export-debug "Android" build/CrashDrive3D.apk
+
+          test -s build/CrashDrive3D.apk
+          ls -lh build/CrashDrive3D.apk
 
       - name: Upload APK artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: CrashDrive3D-Android-APK
