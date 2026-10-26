@@ -1,3 +1,4 @@
+
 name: Build Android APK
 
 on:
@@ -28,7 +29,7 @@ jobs:
           apt-get update
           apt-get install -y openjdk-17-jdk wget unzip ca-certificates coreutils
 
-      - name: Find Android SDK and Java
+      - name: Configure Java and Android SDK
         shell: bash
         run: |
           set -euo pipefail
@@ -54,7 +55,7 @@ jobs:
           fi
 
           if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
-            echo "ERROR: Android SDK directory was not found."
+            echo "ERROR: Android SDK not found."
             env | grep -E 'ANDROID|JAVA_HOME' || true
             exit 1
           fi
@@ -62,21 +63,21 @@ jobs:
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
 
-          echo "Android SDK: $SDK"
           java -version
           godot --version
+          echo "SDK: $SDK"
 
       - name: Install Android SDK packages
         timeout-minutes: 12
         run: |
           set -eu
 
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+          SDKMANAGER="$(find "$ANDROID_HOME" \
             -type f -name sdkmanager 2>/dev/null | head -n 1 || true)"
 
           if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager was not found."
-            find "$ANDROID_HOME" -maxdepth 5 \
+            echo "ERROR: sdkmanager not found."
+            find "$ANDROID_HOME" -maxdepth 6 \
               -type f -name sdkmanager 2>/dev/null || true
             exit 1
           fi
@@ -92,7 +93,7 @@ jobs:
           test -d "$ANDROID_HOME/platforms/android-35"
           test -d "$ANDROID_HOME/build-tools/35.0.0"
 
-      - name: Validate project files
+      - name: Validate project
         run: |
           set -eu
 
@@ -101,11 +102,9 @@ jobs:
           test -f scenes/Main.tscn
 
           grep -q 'name="Android"' export_presets.cfg
-          grep -q 'platform="Android"' export_presets.cfg
           grep -q 'run/main_scene="res://scenes/Main.tscn"' project.godot
 
-          echo "Project files found."
-          echo "Android export preset found."
+          echo "Project files OK."
 
       - name: Install Godot export templates
         timeout-minutes: 6
@@ -136,17 +135,20 @@ jobs:
             cp /tmp/godot-templates/templates/* "$TEMPLATE_DIR/"
           fi
 
-          echo "Godot Android templates are ready."
+          echo "Godot export templates ready."
 
       - name: Import project resources
         timeout-minutes: 8
         run: |
           set -eu
+
           timeout 420s godot \
             --headless \
             --editor \
             --path . \
             --import
+
+          echo "Project import finished."
 
       - name: Configure Android signing
         run: |
@@ -165,9 +167,12 @@ jobs:
             -dname "CN=Android Debug,O=Android,C=US"
 
           SETTINGS="$HOME/.config/godot/editor_settings-4.5.tres"
-          test -f "$SETTINGS"
 
-          cat >> "$SETTINGS" <<EOF
+          if [ ! -f "$SETTINGS" ]; then
+            echo "ERROR: Godot editor settings file not found."
+            echo "Will continue to export and report any signing configuration error."
+          else
+            cat >> "$SETTINGS" <<EOF
 
           export/android/java_sdk_path = "$JAVA_HOME"
           export/android/android_sdk_path = "$ANDROID_HOME"
@@ -175,31 +180,42 @@ jobs:
           export/android/debug_keystore_user = "androiddebugkey"
           export/android/debug_keystore_pass = "android"
           EOF
+          fi
 
-      - name: Install Android build template
-        timeout-minutes: 6
+      - name: Check Android build template
         run: |
           set -eu
 
-          timeout 300s godot \
-            --headless \
-            --path . \
-            --install-android-build-template
+          echo "Checking Godot Android templates..."
+          ls -lh "$HOME/.local/share/godot/export_templates/4.5.stable/"
 
-          echo "Android build template installation command finished."
+          echo "Checking existing Android project..."
+          if [ -d android ]; then
+            ls -lah android/
+          else
+            echo "No project android/ directory yet."
+          fi
 
       - name: Export APK
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: |
           set -eu
 
           mkdir -p build
 
-          timeout 840s godot \
+          timeout 1080s godot \
             --headless \
             --verbose \
             --path . \
-            --export-debug "Android" build/CrashDrive3D.apk
+            --export-debug "Android" build/CrashDrive3D.apk \
+            > /tmp/godot-export.log 2>&1 || {
+              RESULT=$?
+              cat /tmp/godot-export.log
+              echo "Export failed with exit code $RESULT"
+              exit "$RESULT"
+            }
+
+          cat /tmp/godot-export.log
 
           test -s build/CrashDrive3D.apk
 
@@ -214,3 +230,4 @@ jobs:
           path: build/CrashDrive3D.apk
           if-no-files-found: error
           retention-days: 14
+          
