@@ -9,18 +9,30 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: barichello/godot-ci:4.5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Build with Godot
-        uses: barichello/godot-ci:4.5
-        with:
-          godot_version: 4.5
-        # Следующие шаги выполняются в контейнере сборки
 
       - name: Check project files
         run: |
           test -f project.godot
           test -f export_presets.cfg
+
+      - name: Import project
+        run: godot --headless --editor --path . --quit
+
+      - name: Export debug APK
+        run: |
+          mkdir -p build
+          godot --headless --path . --export-debug "Android" build/CrashDrive3D.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrashDrive3D-Android-APK
+          path: build/CrashDrive3D.apk
+          if-no-files-found: error
+          retention-days: 14
           
