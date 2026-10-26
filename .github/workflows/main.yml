@@ -189,34 +189,34 @@ jobs:
         run: |
           set -eu
 
-          echo "Checking Godot Android source template..."
-          test -s "$HOME/.local/share/godot/export_templates/4.5.stable/android_source.zip"
+          TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/4.5.stable"
+          PROJECT_ANDROID="$PWD/android"
 
-          echo "Installing Android build template..."
+          echo "Checking Android source template..."
+          test -s "$TEMPLATE_DIR/android_source.zip"
 
-          set +e
-          timeout 420s godot \
-            --headless \
-            --verbose \
-            --path . \
-            --install-android-build-template \
-            > /tmp/android-template.log 2>&1
-          RESULT=$?
-          set -e
+          echo "Inspecting archive structure..."
+          unzip -Z1 "$TEMPLATE_DIR/android_source.zip" | head -60
 
-          cat /tmp/android-template.log
+          echo "Extracting Android build template..."
+          mkdir -p "$PROJECT_ANDROID"
 
-          if [ "$RESULT" -ne 0 ]; then
-            echo "Android template installation failed: $RESULT"
-            exit "$RESULT"
-          fi
+          unzip -oq "$TEMPLATE_DIR/android_source.zip" \
+            -d "$PROJECT_ANDROID"
 
-          if [ ! -d android ]; then
-            echo "ERROR: Android project directory was not created."
+          echo "Checking extracted Gradle files..."
+          find "$PROJECT_ANDROID" -maxdepth 3 -type f | head -80
+
+          if [ ! -f "$PROJECT_ANDROID/build.gradle" ] && \
+             [ ! -f "$PROJECT_ANDROID/build.gradle.kts" ] && \
+             [ ! -f "$PROJECT_ANDROID/settings.gradle" ] && \
+             [ ! -f "$PROJECT_ANDROID/settings.gradle.kts" ]; then
+            echo "ERROR: Expected Gradle files were not found."
+            echo "The archive may require a different directory layout."
             exit 1
           fi
 
-          echo "Android build template installation completed."
+          echo "Android template extraction finished."
 
       - name: Export APK
         timeout-minutes: 20
