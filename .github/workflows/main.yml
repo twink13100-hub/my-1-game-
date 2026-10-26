@@ -15,6 +15,42 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install required packages
+        run: |
+          apt-get update
+          apt-get install -y fontconfig openjdk-17-jdk unzip
+
+      - name: Configure Java
+        run: |
+          export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Install Godot export templates
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates/4.5.stable
+          wget -O /tmp/templates.tpz \
+            https://github.com/godotengine/godot/releases/download/4.5-stable/Godot_v4.5-stable_export_templates.tpz
+          mkdir -p /tmp/godot-templates
+          unzip -q /tmp/templates.tpz -d /tmp/godot-templates
+          cp -r /tmp/godot-templates/templates/* \
+            ~/.local/share/godot/export_templates/4.5.stable/
+
+      - name: Configure Android export
+        run: |
+          mkdir -p ~/.config/godot
+          keytool -genkeypair -v \
+            -keystore /tmp/debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          printf '\nexport/android/java_sdk_path = "/usr/lib/jvm/java-17-openjdk-amd64"\n' >> ~/.config/godot/editor_settings-4.5.tres
+          printf 'export/android/debug_keystore = "/tmp/debug.keystore"\n' >> ~/.config/godot/editor_settings-4.5.tres
+          printf 'export/android/debug_keystore_user = "androiddebugkey"\n' >> ~/.config/godot/editor_settings-4.5.tres
+          printf 'export/android/debug_keystore_pass = "android"\n' >> ~/.config/godot/editor_settings-4.5.tres
+
       - name: Check project files
         run: |
           test -f project.godot
