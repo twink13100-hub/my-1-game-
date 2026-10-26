@@ -14,7 +14,7 @@ jobs:
   build:
     name: Build CrashDrive 3D APK
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     container:
       image: barichello/godot-ci:4.5
@@ -63,9 +63,9 @@ jobs:
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
 
+          echo "Android SDK: $SDK"
           java -version
           godot --version
-          echo "SDK: $SDK"
 
       - name: Install Android SDK packages
         timeout-minutes: 12
@@ -92,6 +92,8 @@ jobs:
 
           test -d "$ANDROID_HOME/platforms/android-35"
           test -d "$ANDROID_HOME/build-tools/35.0.0"
+
+          echo "Android SDK packages ready."
 
       - name: Validate project
         run: |
@@ -170,9 +172,10 @@ jobs:
 
           if [ ! -f "$SETTINGS" ]; then
             echo "ERROR: Godot editor settings file not found."
-            echo "Will continue to export and report any signing configuration error."
-          else
-            cat >> "$SETTINGS" <<EOF
+            exit 1
+          fi
+
+          cat >> "$SETTINGS" <<EOF
 
           export/android/java_sdk_path = "$JAVA_HOME"
           export/android/android_sdk_path = "$ANDROID_HOME"
@@ -180,21 +183,40 @@ jobs:
           export/android/debug_keystore_user = "androiddebugkey"
           export/android/debug_keystore_pass = "android"
           EOF
-          fi
 
-      - name: Check Android build template
+      - name: Install Android build template
+        timeout-minutes: 8
         run: |
           set -eu
 
-          echo "Checking Godot Android templates..."
-          ls -lh "$HOME/.local/share/godot/export_templates/4.5.stable/"
+          echo "Checking Godot Android source template..."
+          test -s "$HOME/.local/share/godot/export_templates/4.5.stable/android_source.zip"
 
-          echo "Checking existing Android project..."
-          if [ -d android ]; then
-            ls -lah android/
-          else
-            echo "No project android/ directory yet."
+          echo "Installing Android build template..."
+
+          set +e
+          timeout 420s godot \
+            --headless \
+            --verbose \
+            --path . \
+            --install-android-build-template \
+            > /tmp/android-template.log 2>&1
+          RESULT=$?
+          set -e
+
+          cat /tmp/android-template.log
+
+          if [ "$RESULT" -ne 0 ]; then
+            echo "Android template installation failed: $RESULT"
+            exit "$RESULT"
           fi
+
+          if [ ! -d android ]; then
+            echo "ERROR: Android project directory was not created."
+            exit 1
+          fi
+
+          echo "Android build template installation completed."
 
       - name: Export APK
         timeout-minutes: 20
@@ -203,19 +225,22 @@ jobs:
 
           mkdir -p build
 
+          set +e
           timeout 1080s godot \
             --headless \
             --verbose \
             --path . \
             --export-debug "Android" build/CrashDrive3D.apk \
-            > /tmp/godot-export.log 2>&1 || {
-              RESULT=$?
-              cat /tmp/godot-export.log
-              echo "Export failed with exit code $RESULT"
-              exit "$RESULT"
-            }
+            > /tmp/godot-export.log 2>&1
+          RESULT=$?
+          set -e
 
           cat /tmp/godot-export.log
+
+          if [ "$RESULT" -ne 0 ]; then
+            echo "APK export failed: $RESULT"
+            exit "$RESULT"
+          fi
 
           test -s build/CrashDrive3D.apk
 
