@@ -180,6 +180,27 @@ jobs:
 
           echo "Android signing configuration prepared."
 
+      - name: Diagnose Android SDK
+        run: |
+          set -eu
+          echo "JAVA_HOME=${JAVA_HOME:-<unset>}"
+          echo "ANDROID_HOME=${ANDROID_HOME:-<unset>}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-<unset>}"
+
+          if [ -n "${ANDROID_HOME:-}" ] && [ -d "$ANDROID_HOME" ]; then
+            echo "--- SDK root ---"
+            ls -la "$ANDROID_HOME"
+            echo "--- platforms ---"
+            ls -la "$ANDROID_HOME/platforms" || true
+            echo "--- build-tools ---"
+            ls -la "$ANDROID_HOME/build-tools" || true
+            echo "--- platform-tools ---"
+            ls -la "$ANDROID_HOME/platform-tools" || true
+          else
+            echo "ERROR: ANDROID_HOME is unset or points to a missing directory."
+            exit 1
+          fi
+
       - name: Install Android build template
         timeout-minutes: 4
         run: |
