@@ -26,6 +26,7 @@ jobs:
       - name: Install system dependencies
         timeout-minutes: 5
         run: |
+          set -eu
           apt-get update
           apt-get install -y \
             fontconfig \
@@ -35,19 +36,58 @@ jobs:
             ca-certificates \
             coreutils
 
-      - name: Configure Java
+      - name: Configure Java and Android SDK
         run: |
+          set -eu
+
           export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
           echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
           echo "$JAVA_HOME/bin" >> "$GITHUB_PATH"
           java -version
+
+          SDK_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+
+          if [ -z "$SDK_PATH" ]; then
+            for candidate in \
+              /opt/android-sdk \
+              /opt/android-sdk-linux \
+              /usr/lib/android-sdk \
+              /root/android-sdk \
+              /github/home/Android/Sdk; do
+              if [ -d "$candidate/platform-tools" ] || \
+                 [ -d "$candidate/platforms" ]; then
+                SDK_PATH="$candidate"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "$SDK_PATH" ] || [ ! -d "$SDK_PATH" ]; then
+            echo "ERROR: Android SDK was not found."
+            echo "Checking common SDK locations:"
+            find / -maxdepth 4 -type d \
+              \( -name platforms -o -name platform-tools \) \
+              2>/dev/null | head -30 || true
+            exit 1
+          fi
+
+          echo "ANDROID_HOME=$SDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_PATH" >> "$GITHUB_ENV"
+          echo "Android SDK: $SDK_PATH"
+          ls -la "$SDK_PATH"
 
       - name: Check project files
         run: |
           set -eu
           test -f project.godot
           test -f export_presets.cfg
-          echo "Project files found"
+
+          grep -q '^gradle_build/min_sdk=24$' export_presets.cfg || {
+            echo "ERROR: Min SDK must be 24."
+            exit 1
+          }
+
+          echo "Project files found."
 
       - name: Install Godot export templates
         timeout-minutes: 5
@@ -82,30 +122,12 @@ jobs:
       - name: Import project
         timeout-minutes: 3
         run: |
+          set -eu
           timeout 150s godot \
             --headless \
             --editor \
             --path . \
             --quit
-
-      - name: Install Android build template
-        timeout-minutes: 4
-        run: |
-          set -eu
-
-          if [ -d android/build ]; then
-            echo "Android build template already exists"
-          else
-            timeout 180s godot \
-              --headless \
-              --verbose \
-              --path . \
-              --install-android-build-template \
-              --export-debug "Android" /tmp/template-check.apk
-          fi
-
-          test -d android/build
-          echo "Android build template check completed"
 
       - name: Configure debug signing key
         timeout-minutes: 3
@@ -124,13 +146,58 @@ jobs:
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
-          cat >> "$HOME/.config/godot/editor_settings-4.5.tres" <<'EOF'
+          SETTINGS="$HOME/.config/godot/editor_settings-4.5.tres"
 
-          export/android/java_sdk_path = "/usr/lib/jvm/java-17-openjdk-amd64"
-          export/android/debug_keystore = "/tmp/debug.keystore"
-          export/android/debug_keystore_user = "androiddebugkey"
-          export/android/debug_keystore_pass = "android"
-          EOF
+          test -f "$SETTINGS" || {
+            echo "ERROR: Godot editor settings file was not created."
+            exit 1
+          }
+
+          if ! grep -q '^export/android/java_sdk_path = ' "$SETTINGS"; then
+            printf '\nexport/android/java_sdk_path = "%s"\n' \
+              "$JAVA_HOME" >> "$SETTINGS"
+          fi
+
+          if ! grep -q '^export/android/android_sdk_path = ' "$SETTINGS"; then
+            printf 'export/android/android_sdk_path = "%s"\n' \
+              "$ANDROID_HOME" >> "$SETTINGS"
+          fi
+
+          if ! grep -q '^export/android/debug_keystore = ' "$SETTINGS"; then
+            printf 'export/android/debug_keystore = "/tmp/debug.keystore"\n' \
+              >> "$SETTINGS"
+          fi
+
+          if ! grep -q '^export/android/debug_keystore_user = ' "$SETTINGS"; then
+            printf 'export/android/debug_keystore_user = "androiddebugkey"\n' \
+              >> "$SETTINGS"
+          fi
+
+          if ! grep -q '^export/android/debug_keystore_pass = ' "$SETTINGS"; then
+            printf 'export/android/debug_keystore_pass = "android"\n' \
+              >> "$SETTINGS"
+          fi
+
+          echo "Android signing configuration prepared."
+
+      - name: Install Android build template
+        timeout-minutes: 4
+        run: |
+          set -eu
+
+          if [ -d android/build ]; then
+            echo "Android build template already exists."
+          else
+            timeout 180s godot \
+              --headless \
+              --verbose \
+              --path . \
+              --install-android-build-template \
+              --export-debug "Android" /tmp/template-check.apk
+          fi
+
+          test -d android/build
+          echo "Android build template check completed."
 
       - name: Export debug APK
         timeout-minutes: 10
