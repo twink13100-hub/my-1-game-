@@ -4,27 +4,36 @@ name: Build Android APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-latest
     container:
       image: barichello/godot-ci:4.5
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install required packages
+      - name: Install system dependencies
         run: |
           apt-get update
-          apt-get install -y fontconfig openjdk-17-jdk unzip
+          apt-get install -y fontconfig openjdk-17-jdk unzip wget
 
       - name: Configure Java
         run: |
           export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
           echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
           echo "$JAVA_HOME/bin" >> "$GITHUB_PATH"
+          java -version
+
+      - name: Check project files
+        run: |
+          test -f project.godot
+          test -f export_presets.cfg
+          echo "Project files found"
 
       - name: Install Godot export templates
         run: |
@@ -32,37 +41,42 @@ jobs:
           wget -O /tmp/templates.tpz \
             https://github.com/godotengine/godot/releases/download/4.5-stable/Godot_v4.5-stable_export_templates.tpz
           mkdir -p /tmp/godot-templates
-          unzip -q /tmp/templates.tpz -d /tmp/godot-templates
+          unzip -oq /tmp/templates.tpz -d /tmp/godot-templates
           cp -r /tmp/godot-templates/templates/* \
             ~/.local/share/godot/export_templates/4.5.stable/
+          ls -la ~/.local/share/godot/export_templates/4.5.stable/
 
-      - name: Configure Android export
+      - name: Import project
+        run: |
+          godot --headless --editor --path . --quit
+
+      - name: Install Android build template
+        run: |
+          godot --headless --path . --install-android-build-template
+
+      - name: Configure debug signing key
         run: |
           mkdir -p ~/.config/godot
-          keytool -genkeypair -v \
+          keytool -genkeypair \
             -keystore /tmp/debug.keystore \
             -storepass android \
             -alias androiddebugkey \
             -keypass android \
-            -keyalg RSA -keysize 2048 -validity 10000 \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
+          touch ~/.config/godot/editor_settings-4.5.tres
           printf '\nexport/android/java_sdk_path = "/usr/lib/jvm/java-17-openjdk-amd64"\n' >> ~/.config/godot/editor_settings-4.5.tres
           printf 'export/android/debug_keystore = "/tmp/debug.keystore"\n' >> ~/.config/godot/editor_settings-4.5.tres
           printf 'export/android/debug_keystore_user = "androiddebugkey"\n' >> ~/.config/godot/editor_settings-4.5.tres
           printf 'export/android/debug_keystore_pass = "android"\n' >> ~/.config/godot/editor_settings-4.5.tres
 
-      - name: Check project files
-        run: |
-          test -f project.godot
-          test -f export_presets.cfg
-
-      - name: Import project
-        run: godot --headless --editor --path . --quit
-
       - name: Export debug APK
         run: |
           mkdir -p build
           godot --headless --path . --export-debug "Android" build/CrashDrive3D.apk
+          test -f build/CrashDrive3D.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
