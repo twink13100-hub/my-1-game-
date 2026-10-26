@@ -1,1 +1,277 @@
+name: Build Android APK
 
+on:
+workflow_dispatch:
+push:
+branches:
+- main
+
+permissions:
+contents: read
+
+jobs:
+build:
+name: Build Godot Android APK
+runs-on: ubuntu-latest
+timeout-minutes: 30
+
+container:
+  image: barichello/godot-ci:4.5
+
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
+
+  - name: Install system dependencies
+    timeout-minutes: 5
+    run: |
+      set -eu
+      apt-get update
+      apt-get install -y \
+        fontconfig \
+        openjdk-17-jdk \
+        unzip \
+        wget \
+        ca-certificates \
+        coreutils
+
+  - name: Configure Java and Android SDK
+    run: |
+      set -eu
+
+      export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+      echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+      echo "$JAVA_HOME/bin" >> "$GITHUB_PATH"
+      java -version
+
+      SDK_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+
+      if [ -z "$SDK_PATH" ]; then
+        for candidate in \
+          /opt/android-sdk \
+          /opt/android-sdk-linux \
+          /usr/lib/android-sdk \
+          /root/android-sdk \
+          /github/home/Android/Sdk; do
+          if [ -d "$candidate/platform-tools" ] || \
+             [ -d "$candidate/platforms" ]; then
+            SDK_PATH="$candidate"
+            break
+          fi
+        done
+      fi
+
+      if [ -z "$SDK_PATH" ] || [ ! -d "$SDK_PATH" ]; then
+        echo "ERROR: Android SDK was not found."
+        find / -maxdepth 4 -type d \
+          \( -name platforms -o -name platform-tools \) \
+          2>/dev/null | head -30 || true
+        exit 1
+      fi
+
+      echo "ANDROID_HOME=$SDK_PATH" >> "$GITHUB_ENV"
+      echo "ANDROID_SDK_ROOT=$SDK_PATH" >> "$GITHUB_ENV"
+      echo "Android SDK: $SDK_PATH"
+      ls -la "$SDK_PATH"
+
+  - name: Install Android SDK 35
+    timeout-minutes: 10
+    run: |
+      set -eu
+
+      SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+        -type f -name sdkmanager 2>/dev/null | head -1 || true)"
+
+      if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+        echo "ERROR: Android sdkmanager was not found."
+        find "$ANDROID_HOME/cmdline-tools" -maxdepth 4 -type f \
+          2>/dev/null | head -50 || true
+        exit 1
+      fi
+
+      yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses || true
+
+      "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+        "platforms;android-35" \
+        "build-tools;35.0.0"
+
+      echo "--- Installed platforms ---"
+      ls -la "$ANDROID_HOME/platforms"
+      echo "--- Installed build-tools ---"
+      ls -la "$ANDROID_HOME/build-tools"
+
+      test -d "$ANDROID_HOME/platforms/android-35"
+      test -d "$ANDROID_HOME/build-tools/35.0.0"
+
+  - name: Check project files
+    run: |
+      set -eu
+      test -f project.godot
+      test -f export_presets.cfg
+
+      grep -q '^gradle_build/min_sdk=24$' export_presets.cfg || {
+        echo "ERROR: Min SDK must be 24."
+        exit 1
+      }
+
+      grep -q '^gradle_build/target_sdk=35$' export_presets.cfg || {
+        echo "ERROR: Target SDK must be 35."
+        exit 1
+      }
+
+      echo "Project files found."
+      echo "Android export preset:"
+      grep -E '^(name|platform|gradle_build/min_sdk|gradle_build/target_sdk|architectures/arm64-v8a|package/unique_name)=' \
+        export_presets.cfg || true
+
+  - name: Install Godot export templates
+    timeout-minutes: 5
+    run: |
+      set -eu
+
+      GODOT_VERSION="4.5.stable"
+      TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/$GODOT_VERSION"
+
+      mkdir -p "$TEMPLATE_DIR"
+
+      if [ ! -f "$TEMPLATE_DIR/android_debug.apk" ] || \
+         [ ! -f "$TEMPLATE_DIR/android_release.apk" ] || \
+         [ ! -f "$TEMPLATE_DIR/android_source.zip" ]; then
+
+        wget --timeout=30 --tries=3 \
+          -O /tmp/templates.tpz \
+          "https://github.com/godotengine/godot/releases/download/4.5-stable/Godot_v4.5-stable_export_templates.tpz"
+
+        mkdir -p /tmp/godot-templates
+        unzip -oq /tmp/templates.tpz -d /tmp/godot-templates
+
+        test -f /tmp/godot-templates/templates/android_debug.apk
+        test -f /tmp/godot-templates/templates/android_release.apk
+        test -f /tmp/godot-templates/templates/android_source.zip
+
+        cp /tmp/godot-templates/templates/* "$TEMPLATE_DIR/"
+      fi
+
+      ls -lh "$TEMPLATE_DIR"
+
+  - name: Import project
+    timeout-minutes: 3
+    run: |
+      set -eu
+      timeout 150s godot \
+        --headless \
+        --editor \
+        --path . \
+        --quit
+
+  - name: Configure debug signing key
+    timeout-minutes: 3
+    run: |
+      set -eu
+
+      mkdir -p "$HOME/.config/godot"
+
+      keytool -genkeypair \
+        -keystore /tmp/debug.keystore \
+        -storepass android \
+        -alias androiddebugkey \
+        -keypass android \
+        -keyalg RSA \
+        -keysize 2048 \
+        -validity 10000 \
+        -dname "CN=Android Debug,O=Android,C=US"
+
+      SETTINGS="$HOME/.config/godot/editor_settings-4.5.tres"
+
+      test -f "$SETTINGS" || {
+        echo "ERROR: Godot editor settings file was not created."
+        exit 1
+      }
+
+      if ! grep -q '^export/android/java_sdk_path = ' "$SETTINGS"; then
+        printf '\nexport/android/java_sdk_path = "%s"\n' \
+          "$JAVA_HOME" >> "$SETTINGS"
+      fi
+
+      if ! grep -q '^export/android/android_sdk_path = ' "$SETTINGS"; then
+        printf 'export/android/android_sdk_path = "%s"\n' \
+          "$ANDROID_HOME" >> "$SETTINGS"
+      fi
+
+      if ! grep -q '^export/android/debug_keystore = ' "$SETTINGS"; then
+        printf 'export/android/debug_keystore = "/tmp/debug.keystore"\n' \
+          >> "$SETTINGS"
+      fi
+
+      if ! grep -q '^export/android/debug_keystore_user = ' "$SETTINGS"; then
+        printf 'export/android/debug_keystore_user = "androiddebugkey"\n' \
+          >> "$SETTINGS"
+      fi
+
+      if ! grep -q '^export/android/debug_keystore_pass = ' "$SETTINGS"; then
+        printf 'export/android/debug_keystore_pass = "android"\n' \
+          >> "$SETTINGS"
+      fi
+
+      echo "Android signing configuration prepared."
+
+  - name: Diagnose Android SDK
+    run: |
+      set -eu
+
+      echo "JAVA_HOME=$JAVA_HOME"
+      echo "ANDROID_HOME=$ANDROID_HOME"
+      echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+      echo "--- Platforms ---"
+      ls -la "$ANDROID_HOME/platforms"
+
+      echo "--- Build tools ---"
+      ls -la "$ANDROID_HOME/build-tools"
+
+      echo "--- Platform tools ---"
+      ls -la "$ANDROID_HOME/platform-tools"
+
+  - name: Install Android build template
+    timeout-minutes: 4
+    run: |
+      set -eu
+
+      if [ -d android/build ]; then
+        echo "Android build template already exists."
+      else
+        timeout 180s godot \
+          --headless \
+          --verbose \
+          --path . \
+          --install-android-build-template \
+          --export-debug "Android" /tmp/template-check.apk
+      fi
+
+      test -d android/build
+      echo "Android build template check completed."
+
+  - name: Export debug APK
+    timeout-minutes: 10
+    run: |
+      set -eu
+
+      mkdir -p build
+
+      timeout 540s godot \
+        --headless \
+        --verbose \
+        --path . \
+        --export-debug "Android" build/CrashDrive3D.apk
+
+      test -s build/CrashDrive3D.apk
+      ls -lh build/CrashDrive3D.apk
+
+  - name: Upload APK artifact
+    if: success()
+    uses: actions/upload-artifact@v4
+    with:
+      name: CrashDrive3D-Android-APK
+      path: build/CrashDrive3D.apk
+      if-no-files-found: error
+      retention-days: 14
